@@ -10,16 +10,19 @@ import numpy as np
 st.set_page_config(page_title="Personal Finance Pro", layout="wide")
 FILE_NAME = "expenses.csv"
 
-if not os.path.exists(FILE_NAME):
-    df_init = pd.DataFrame(columns=["Date", "Category", "Amount", "Notes"])
-    df_init.to_csv(FILE_NAME, index=False)
-
 def load_data():
+    if not os.path.exists(FILE_NAME) or os.stat(FILE_NAME).st_size == 0:
+        return pd.DataFrame(columns=["Date", "Category", "Amount", "Notes"])
     data = pd.read_csv(FILE_NAME)
     data['Date'] = pd.to_datetime(data['Date'])
     return data
 
-# --- 2. SIDEBAR: INPUT & BUDGET ---
+def save_data(df):
+    df.to_csv(FILE_NAME, index=False)
+
+df = load_data()
+
+# --- 2. SIDEBAR: INPUT ---
 st.sidebar.header("📝 Add Transaction")
 date = st.sidebar.date_input("Date", datetime.date.today())
 category = st.sidebar.selectbox("Category", ["Food", "Travel", "Rent", "Shopping", "Bills", "Health", "Other"])
@@ -27,86 +30,95 @@ amount = st.sidebar.number_input("Amount (₹)", min_value=0)
 notes = st.sidebar.text_input("Short Note")
 
 if st.sidebar.button("Save Expense"):
-    new_entry = pd.DataFrame([[date, category, amount, notes]], columns=["Date", "Category", "Amount", "Notes"])
-    new_entry.to_csv(FILE_NAME, mode='a', header=False, index=False)
+    new_entry = pd.DataFrame([[pd.to_datetime(date), category, amount, notes]], columns=["Date", "Category", "Amount", "Notes"])
+    df = pd.concat([df, new_entry], ignore_index=True)
+    save_data(df)
     st.sidebar.success("Saved successfully!")
     st.rerun()
 
 st.sidebar.divider()
-st.sidebar.header("🎯 Budget Setting")
 budget_limit = st.sidebar.number_input("Monthly Budget Goal (₹)", min_value=0, value=10000)
 
 # --- 3. MAIN DASHBOARD ---
 st.title("💰 Smart Expense Analytics")
-df = load_data()
 
 if not df.empty:
     total_spend = df['Amount'].sum()
-    avg_spend = df['Amount'].mean()
+    remaining = budget_limit - total_spend
     
-    # Budget Alert
+    # --- ENHANCED BUDGET ALERTS ---
     if total_spend > budget_limit:
-        st.error(f"🚨 Budget Exceeded! Total: ₹{total_spend} (Limit: ₹{budget_limit})")
+        over_by = total_spend - budget_limit
+        st.error(f"🚨 Budget Exceeded by ₹{over_by:,}! (Total Spend: ₹{total_spend:,})")
     elif total_spend > (budget_limit * 0.8):
-        st.warning(f"⚠️ Warning: you have reached 80% of your budget")
+        st.warning(f"⚠️ 80% Budget Reached! You have only ₹{remaining:,} left before hitting the limit.")
+    else:
+        st.success(f"✅ You are within budget! ₹{remaining:,} remaining.")
 
-    # Top Metrics
+    # Metrics
     col1, col2, col3 = st.columns(3)
     col1.metric("Total Spending", f"₹{total_spend:,}")
     col2.metric("Transactions", len(df))
-    col3.metric("Avg. per Expense", f"₹{int(avg_spend):,}")
+    col3.metric("Avg. Spend", f"₹{int(df['Amount'].mean()):,}")
 
-    st.divider()
+    # Charts
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(px.pie(df, values='Amount', names='Category', hole=0.4, title="Category Split"), use_container_width=True)
+    with c2:
+        daily = df.groupby('Date')['Amount'].sum().reset_index()
+        st.plotly_chart(px.bar(daily, x='Date', y='Amount', title="Daily Trend"), use_container_width=True)
 
-    # --- 4. CHARTS SECTION ---
-    chart_col1, chart_col2 = st.columns(2)
-    with chart_col1:
-        st.subheader("Category-wise Split")
-        fig_pie = px.pie(df, values='Amount', names='Category', hole=0.4)
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    with chart_col2:
-        st.subheader("Daily Spending Trend")
-        daily_df = df.groupby('Date')['Amount'].sum().reset_index()
-        fig_bar = px.bar(daily_df, x='Date', y='Amount', color_discrete_sequence=['#febd69'])
-        st.plotly_chart(fig_bar, use_container_width=True)
-
-    # --- 5. LEVEL 3: AI FORECASTING ---
+    # --- 4. AI FORECASTING ---
     st.divider()
     st.header("🤖 AI Spending Forecast")
-
     if len(df) >= 3:
-        # Preprocessing for ML
         df['DayNum'] = (df['Date'] - df['Date'].min()).dt.days
         X = df[['DayNum']].values
         y = df['Amount'].values
-        
-        model = LinearRegression()
-        model.fit(X, y)
-        
-        # Prediction for next 30 days
-        last_day = df['DayNum'].max()
-        future_day = np.array([[last_day + 30]])
-        prediction = model.predict(future_day)[0]
+        model = LinearRegression().fit(X, y)
+        prediction = model.predict([[df['DayNum'].max() + 30]])[0]
         
         f_col1, f_col2 = st.columns(2)
-        f_col1.metric("Predicted Next Big Expense", f"₹{int(prediction):,}")
-        
-        if prediction > avg_spend * 1.5:
-            st.error("⚠️ AI Alert: chances of increased spending in upcoming days!")
-        else:
-            st.success("✅ AI Insight: Spending trend is currently stable.")
-
-        # Trend Chart
-        trend_line = model.predict(X)
-        df['Trend'] = trend_line
-        fig_trend = px.line(df, x='Date', y=['Amount', 'Trend'], title="Actual vs AI Trend Line")
-        st.plotly_chart(fig_trend, use_container_width=True)
+        f_col1.metric("Predicted Next Month's Expense", f"₹{max(0, int(prediction)):,}")
+        st.info("AI Analysis: Based on your current habits, this is your estimated future spend.")
     else:
-        st.info("write three different dates for AI prediction.")
+        st.info("Add at least 3 transactions for AI insights.")
 
-    # Raw Data Table
-    with st.expander("See All Transactions"):
-        st.table(df.sort_values(by="Date", ascending=False))
+    # --- 5. DATA TABLE & MANAGEMENT ---
+    st.divider()
+    st.header("⚙️ History & Management")
+    
+    with st.expander("📄 View Full Transaction History", expanded=True):
+        st.dataframe(df.sort_values(by="Date", ascending=False), use_container_width=True)
+
+    tab1, tab2 = st.tabs(["Edit/Delete Entry", "Danger Zone"])
+    with tab1:
+        edit_idx = st.selectbox("Select Transaction to Edit/Delete", options=df.index, 
+                               format_func=lambda x: f"{df.iloc[x]['Date'].date()} - {df.iloc[x]['Category']} - ₹{df.iloc[x]['Amount']}")
+        row = df.iloc[edit_idx]
+        col_ed1, col_ed2 = st.columns(2)
+        new_amt = col_ed1.number_input("Update Amount", value=int(row['Amount']), key="upd_amt")
+        new_cat = col_ed2.selectbox("Update Category", ["Food", "Travel", "Rent", "Shopping", "Bills", "Health", "Other"], 
+                                   index=["Food", "Travel", "Rent", "Shopping", "Bills", "Health", "Other"].index(row['Category']), key="upd_cat")
+        
+        b1, b2 = st.columns(2)
+        if b1.button("Update Entry", type="primary"):
+            df.at[edit_idx, 'Amount'] = new_amt
+            df.at[edit_idx, 'Category'] = new_cat
+            save_data(df)
+            st.success("Updated!")
+            st.rerun()
+        if b2.button("Delete Selected Entry"):
+            df = df.drop(edit_idx)
+            save_data(df)
+            st.warning("Deleted!")
+            st.rerun()
+
+    with tab2:
+        if st.button("🚨 CLEAR ALL DATA"):
+            if os.path.exists(FILE_NAME):
+                os.remove(FILE_NAME)
+                st.rerun()
 else:
-    st.warning("No data available yet. Please add entries from the sidebar!")
+    st.info("No data found. Add some expenses! ✨")
